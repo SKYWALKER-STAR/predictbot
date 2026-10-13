@@ -3,10 +3,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
-
 from config.settings import settings
 from core.auth import PredictAuthService
+from core.http_factory import build_async_client
 from core.types import MarketOutcome, MarketSummary, OrderbookSnapshot
 
 logger = logging.getLogger(__name__)
@@ -15,7 +14,7 @@ logger = logging.getLogger(__name__)
 class PredictHttpClient:
     def __init__(self, auth: PredictAuthService) -> None:
         self._auth = auth
-        self._client = httpx.AsyncClient(base_url=settings.api_base_url, timeout=15.0)
+        self._client = build_async_client(base_url=settings.api_base_url, timeout_seconds=15.0)
 
     async def close(self) -> None:
         await self._client.aclose()

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import logging
 
-import httpx
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
 from config.settings import settings
+from core.http_factory import build_async_client
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class PredictAuthService:
         account = Account.from_key(settings.predict_wallet_private_key)
         signer_address = settings.wallet_address or account.address
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with build_async_client(timeout_seconds=10.0) as client:
             message_resp = await client.get(
                 f"{settings.api_base_url}/v1/auth/message",
                 headers={"x-api-key": settings.predict_api_key},

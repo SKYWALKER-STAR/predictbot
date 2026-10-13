@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     predict_env: str = Field(default="prod", alias="PREDICT_ENV")
     predict_api_key: str = Field(default="", alias="PREDICT_API_KEY")
+    predict_proxy_url: str = Field(default="", alias="PREDICT_PROXY_URL")
     predict_wallet_private_key: str = Field(default="", alias="PREDICT_WALLET_PRIVATE_KEY")
     predict_signer_address: str = Field(default="", alias="PREDICT_SIGNER_ADDRESS")
     predict_account_address: str = Field(default="", alias="PREDICT_ACCOUNT_ADDRESS")
