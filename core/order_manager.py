@@ -47,6 +47,29 @@ class OrderManager:
         expiration = int((datetime.now(timezone.utc) + timedelta(seconds=settings.order_expiration_seconds)).timestamp())
 
         try:
+            if await self._http.has_open_order(market_id=intent.market_id, token_id=token_id, side=side):
+                msg = (
+                    "skip duplicate OPEN order: "
+                    f"market_id={intent.market_id} side={intent.side} token_id={token_id}"
+                )
+                self._update_local(local_id, status="SKIPPED", error=msg)
+                self._audit.record("PLACE_ORDER", "SKIPPED", {"local_id": local_id, "intent": asdict(intent)}, msg)
+                logger.info(msg)
+                return PlaceOrderResult(False, local_id, None, None, False, error=msg)
+
+            if side == 1:
+                available_shares = await self._http.get_outcome_shares(token_id, market_id=intent.market_id)
+                required_shares = Decimal(str(intent.quantity))
+                if available_shares < required_shares:
+                    msg = (
+                        "skip SELL due to insufficient shares: "
+                        f"available={available_shares:.6f} required={required_shares:.6f} token_id={token_id}"
+                    )
+                    self._update_local(local_id, status="SKIPPED", error=msg)
+                    self._audit.record("PLACE_ORDER", "SKIPPED", {"local_id": local_id, "intent": asdict(intent)}, msg)
+                    logger.info(msg)
+                    return PlaceOrderResult(False, local_id, None, None, False, error=msg)
+
             signed = await self._signer.sign_order(
                 maker=settings.wallet_address,
                 signer=settings.wallet_address,
@@ -69,6 +92,7 @@ class OrderManager:
                 }
             }
             response = await self._http.create_order(body)
+            logger.info("create_order response: %s", response)
             payload = response.get("data", {})
             order_hash = payload.get("orderHash")
             order_id = payload.get("orderId")

@@ -25,10 +25,19 @@ class Settings(BaseSettings):
     max_open_orders: int = Field(default=5, alias="MAX_OPEN_ORDERS", ge=1)
 
     strategy_enabled: bool = Field(default=True, alias="STRATEGY_ENABLED")
+    strategy_mode: str = Field(default="market_maker", alias="STRATEGY_MODE")
     strategy_base_order_size: float = Field(default=10.0, alias="STRATEGY_BASE_ORDER_SIZE", gt=0)
     strategy_min_spread: float = Field(default=0.02, alias="STRATEGY_MIN_SPREAD", gt=0)
     strategy_min_imbalance: float = Field(default=0.10, alias="STRATEGY_MIN_IMBALANCE", ge=0)
     strategy_cooldown_seconds: float = Field(default=3.0, alias="STRATEGY_COOLDOWN_SECONDS", ge=0)
+
+    mm_quote_size: float = Field(default=8.0, alias="MM_QUOTE_SIZE", gt=0)
+    mm_min_order_value_usdt: float = Field(default=0.95, alias="MM_MIN_ORDER_VALUE_USDT", gt=0)
+    mm_half_spread_bps: float = Field(default=60.0, alias="MM_HALF_SPREAD_BPS", gt=0)
+    mm_min_spread_bps: float = Field(default=20.0, alias="MM_MIN_SPREAD_BPS", ge=0)
+    mm_refresh_seconds: float = Field(default=2.5, alias="MM_REFRESH_SECONDS", ge=0.2)
+    mm_min_level_size: float = Field(default=1.0, alias="MM_MIN_LEVEL_SIZE", ge=0)
+    mm_outcome: str = Field(default="YES", alias="MM_OUTCOME")
 
     order_expiration_seconds: int = Field(default=300, alias="ORDER_EXPIRATION_SECONDS", ge=30)
 

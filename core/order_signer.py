@@ -1,14 +1,12 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
-import secrets
-from typing import Any
 from typing import Protocol
 
 from eth_account import Account
-from eth_account.messages import encode_typed_data
-from eth_utils import to_checksum_address
+from predict_sdk import BuildOrderInput, ChainId, LimitHelperInput, OrderBuilder, OrderBuilderOptions, Side
 
 from config.settings import settings
 
@@ -97,6 +95,13 @@ class EoaOrderSigner:
             raise ValueError("PREDICT_WALLET_PRIVATE_KEY is required for live signing")
         self._private_key = settings.predict_wallet_private_key
         self._account = Account.from_key(self._private_key)
+        chain_id = ChainId.BNB_MAINNET if settings.predict_env == "prod" else ChainId.BNB_TESTNET
+        options = (
+            OrderBuilderOptions(predict_account=settings.predict_account_address)
+            if settings.predict_account_address
+            else None
+        )
+        self._builder = OrderBuilder.make(chain_id, self._private_key, options)
 
     async def sign_order(
         self,
@@ -112,100 +117,60 @@ class EoaOrderSigner:
         is_neg_risk: bool,
         is_yield_bearing: bool,
     ) -> SignedContractOrder:
-        if not settings.eip712_verifying_contract:
-            raise ValueError("EIP712_VERIFYING_CONTRACT is required for live signing")
-
-        signer_addr = to_checksum_address(signer or self._account.address)
-        maker_addr = to_checksum_address(maker or self._account.address)
-
         q_wei = _to_wei(quantity)
         p_wei = _to_wei(price_per_share)
         if q_wei <= 0 or p_wei <= 0:
             raise ValueError("quantity and price_per_share must be positive")
 
         if side == 0:
-            maker_amount = (q_wei * p_wei) // 10**18
-            taker_amount = q_wei
+            sdk_side = Side.BUY
         elif side == 1:
-            maker_amount = q_wei
-            taker_amount = (q_wei * p_wei) // 10**18
+            sdk_side = Side.SELL
         else:
             raise ValueError(f"unsupported order side: {side}")
 
-        # Predict API expects decimal-like strings for large uint fields.
-        unsigned_order: dict[str, Any] = {
-            "salt": str(secrets.randbits(256)),
-            "maker": maker_addr,
-            "signer": signer_addr,
-            "taker": "0x0000000000000000000000000000000000000000",
-            "tokenId": str(int(token_id)),
-            "makerAmount": str(int(maker_amount)),
-            "takerAmount": str(int(taker_amount)),
-            "expiration": int(expiration_s),
-            "nonce": str(secrets.randbits(63)),
-            "feeRateBps": str(int(fee_rate_bps)),
-            "side": int(side),
-            "signatureType": 0,
-        }
+        amounts = self._builder.get_limit_order_amounts(
+            LimitHelperInput(side=sdk_side, price_per_share_wei=p_wei, quantity_wei=q_wei)
+        )
+        order = self._builder.build_order(
+            "LIMIT",
+            BuildOrderInput(
+                side=sdk_side,
+                token_id=token_id,
+                maker_amount=amounts.maker_amount,
+                taker_amount=amounts.taker_amount,
+                fee_rate_bps=fee_rate_bps,
+                maker=maker or None,
+                signer=signer or None,
+                expires_at=datetime.fromtimestamp(expiration_s, tz=UTC),
+            ),
+        )
+        typed_data = self._builder.build_typed_data(
+            order,
+            is_neg_risk=is_neg_risk,
+            is_yield_bearing=is_yield_bearing,
+        )
+        signed = self._builder.sign_typed_data_order(typed_data)
+        order_hash = signed.hash or self._builder.build_typed_data_hash(typed_data)
 
-        typed_data = self._build_typed_data(unsigned_order)
-        signable = encode_typed_data(full_message=typed_data)
-        signed = Account.sign_message(signable, private_key=self._private_key)
-
-        order = {
-            **unsigned_order,
-            "hash": signed.message_hash.hex(),
-            "signature": signed.signature.hex(),
+        api_order = {
+            "salt": str(order.salt),
+            "maker": order.maker,
+            "signer": order.signer,
+            "taker": order.taker,
+            "tokenId": str(order.token_id),
+            "makerAmount": str(order.maker_amount),
+            "takerAmount": str(order.taker_amount),
+            "expiration": int(order.expiration),
+            "nonce": str(order.nonce),
+            "feeRateBps": str(order.fee_rate_bps),
+            "side": int(order.side.value),
+            "signatureType": int(order.signature_type.value),
+            "signature": signed.signature,
+            "hash": order_hash,
         }
-        return SignedContractOrder(order=order, price_per_share=_dec_to_str(price_per_share))
-
-    @staticmethod
-    def _build_typed_data(order: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "types": {
-                "EIP712Domain": [
-                    {"name": "name", "type": "string"},
-                    {"name": "version", "type": "string"},
-                    {"name": "chainId", "type": "uint256"},
-                    {"name": "verifyingContract", "type": "address"},
-                ],
-                "Order": [
-                    {"name": "salt", "type": "uint256"},
-                    {"name": "maker", "type": "address"},
-                    {"name": "signer", "type": "address"},
-                    {"name": "taker", "type": "address"},
-                    {"name": "tokenId", "type": "uint256"},
-                    {"name": "makerAmount", "type": "uint256"},
-                    {"name": "takerAmount", "type": "uint256"},
-                    {"name": "expiration", "type": "uint256"},
-                    {"name": "nonce", "type": "uint256"},
-                    {"name": "feeRateBps", "type": "uint256"},
-                    {"name": "side", "type": "uint8"},
-                    {"name": "signatureType", "type": "uint8"},
-                ],
-            },
-            "primaryType": "Order",
-            "domain": {
-                "name": settings.eip712_domain_name,
-                "version": settings.eip712_domain_version,
-                "chainId": int(settings.eip712_chain_id),
-                "verifyingContract": to_checksum_address(settings.eip712_verifying_contract),
-            },
-            "message": {
-                "salt": int(order["salt"]),
-                "maker": order["maker"],
-                "signer": order["signer"],
-                "taker": order["taker"],
-                "tokenId": int(order["tokenId"]),
-                "makerAmount": int(order["makerAmount"]),
-                "takerAmount": int(order["takerAmount"]),
-                "expiration": int(order["expiration"]),
-                "nonce": int(order["nonce"]),
-                "feeRateBps": int(order["feeRateBps"]),
-                "side": int(order["side"]),
-                "signatureType": int(order["signatureType"]),
-            },
-        }
+        # Predict expects pricePerShare in wei-like integer string.
+        return SignedContractOrder(order=api_order, price_per_share=str(amounts.price_per_share))
 
 
 def _to_wei(value: Decimal) -> int:
@@ -215,7 +180,10 @@ def _to_wei(value: Decimal) -> int:
 
 def _dec_to_str(value: Decimal) -> str:
     normalized = value.quantize(Decimal("0.000000000000000001"), rounding=ROUND_DOWN)
-    return format(normalized, "f")
+    text = format(normalized, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def build_default_signer() -> OrderSigner:

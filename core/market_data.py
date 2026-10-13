@@ -17,8 +17,18 @@ class MarketDataService:
 
     async def refresh_open_markets(self) -> list[MarketSummary]:
         markets = await self._http.get_markets(status="OPEN", first=100)
-        self._market_cache = {m.market_id: m for m in markets}
+        self._market_cache.update({m.market_id: m for m in markets})
         return markets
+
+    async def refresh_markets_for_ids(self, market_ids: list[int]) -> list[MarketSummary]:
+        refreshed: list[MarketSummary] = []
+        for market_id in market_ids:
+            market = await self._http.get_market_by_id(market_id)
+            if market is None:
+                continue
+            self._market_cache[market.market_id] = market
+            refreshed.append(market)
+        return refreshed
 
     def get_market(self, market_id: int) -> MarketSummary | None:
         return self._market_cache.get(market_id)

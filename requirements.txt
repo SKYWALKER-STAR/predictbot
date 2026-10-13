@@ -6,3 +6,4 @@ pydantic-settings>=2.4.0
 python-dotenv>=1.0.1
 sqlalchemy>=2.0.32
 eth-account>=0.13.3
+predict-sdk>=0.0.22

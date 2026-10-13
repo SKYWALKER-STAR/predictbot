@@ -43,6 +43,7 @@ class PredictWsFeed:
     async def subscribe_market_topics(self, market_ids: Iterable[int]) -> None:
         topics = set()
         for mid in market_ids:
+            logger.info("Subscribing to market topics for market_id: %s", mid) 
             topics.add(f"predictOrderbook/{mid}")
             topics.add(f"predictTradingStatus/{mid}")
             topics.add(f"predictMarketStatus/{mid}")
