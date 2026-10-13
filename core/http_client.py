@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
+from predict_sdk import ChainId, OrderBuilder, OrderBuilderOptions
 
 from config.settings import settings
 from core.auth import PredictAuthService
@@ -19,6 +20,8 @@ class PredictHttpClient:
     def __init__(self, auth: PredictAuthService) -> None:
         self._auth = auth
         self._client = build_async_client(base_url=settings.api_base_url, timeout_seconds=15.0)
+        self._balance_builder: OrderBuilder | None = None
+        self._balance_builder_error = False
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -94,6 +97,34 @@ class PredictHttpClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_open_buy_reserved_usdt(self, first: int = 200) -> Decimal:
+        payload = await self.get_orders(first=first)
+        total = Decimal("0")
+        for row in payload.get("data", []):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("status", "")).upper() != "OPEN":
+                continue
+            order = row.get("order")
+            if not isinstance(order, dict):
+                continue
+            if int(order.get("side", -1)) != 0:
+                continue
+            maker_amount_wei = order.get("makerAmount")
+            total += self._parse_wei_to_decimal(maker_amount_wei)
+        return total
+
+    async def get_wallet_usdt_balance(self) -> Decimal | None:
+        builder = self._get_balance_builder()
+        if builder is None:
+            return None
+        try:
+            wei = await builder.balance_of_async("USDT")
+            return Decimal(int(wei)) / Decimal(10**18)
+        except Exception as exc:
+            logger.warning("failed to query USDT balance via SDK: %s", exc)
+            return None
+
     async def has_open_order(self, *, market_id: int, token_id: str, side: int) -> bool:
         payload = await self.get_orders(first=200)
         for row in payload.get("data", []):
@@ -155,6 +186,41 @@ class PredictHttpClient:
         if "." not in text:
             return amount / Decimal(10**18)
         return amount
+
+    @staticmethod
+    def _parse_wei_to_decimal(raw: Any) -> Decimal:
+        if raw is None:
+            return Decimal("0")
+        text = str(raw).strip()
+        if not text:
+            return Decimal("0")
+        try:
+            value = Decimal(text)
+        except (InvalidOperation, ValueError):
+            return Decimal("0")
+        return value / Decimal(10**18)
+
+    def _get_balance_builder(self) -> OrderBuilder | None:
+        if self._balance_builder_error:
+            return None
+        if self._balance_builder is not None:
+            return self._balance_builder
+        if not settings.predict_wallet_private_key:
+            self._balance_builder_error = True
+            return None
+        try:
+            chain_id = ChainId.BNB_MAINNET if settings.predict_env == "prod" else ChainId.BNB_TESTNET
+            options = (
+                OrderBuilderOptions(predict_account=settings.predict_account_address)
+                if settings.predict_account_address
+                else None
+            )
+            self._balance_builder = OrderBuilder.make(chain_id, settings.predict_wallet_private_key, options)
+            return self._balance_builder
+        except Exception as exc:
+            self._balance_builder_error = True
+            logger.warning("failed to initialize balance builder: %s", exc)
+            return None
 
     @staticmethod
     def _parse_market(row: dict[str, Any]) -> MarketSummary:

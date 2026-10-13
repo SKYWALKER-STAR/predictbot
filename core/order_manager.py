@@ -47,16 +47,6 @@ class OrderManager:
         expiration = int((datetime.now(timezone.utc) + timedelta(seconds=settings.order_expiration_seconds)).timestamp())
 
         try:
-            if await self._http.has_open_order(market_id=intent.market_id, token_id=token_id, side=side):
-                msg = (
-                    "skip duplicate OPEN order: "
-                    f"market_id={intent.market_id} side={intent.side} token_id={token_id}"
-                )
-                self._update_local(local_id, status="SKIPPED", error=msg)
-                self._audit.record("PLACE_ORDER", "SKIPPED", {"local_id": local_id, "intent": asdict(intent)}, msg)
-                logger.info(msg)
-                return PlaceOrderResult(False, local_id, None, None, False, error=msg)
-
             if side == 1:
                 available_shares = await self._http.get_outcome_shares(token_id, market_id=intent.market_id)
                 required_shares = Decimal(str(intent.quantity))
@@ -82,6 +72,21 @@ class OrderManager:
                 is_neg_risk=is_neg_risk,
                 is_yield_bearing=is_yield_bearing,
             )
+
+            if side == 0:
+                new_buy_cost = Decimal(str(signed.order.get("makerAmount", "0"))) / Decimal(10**18)
+                reserved_buy = await self._http.get_open_buy_reserved_usdt(first=200)
+                usdt_balance = await self._http.get_wallet_usdt_balance()
+                if usdt_balance is not None and reserved_buy + new_buy_cost > usdt_balance:
+                    msg = (
+                        "skip BUY due to collateral cap: "
+                        f"balance={usdt_balance:.6f} reserved={reserved_buy:.6f} new={new_buy_cost:.6f}"
+                    )
+                    self._update_local(local_id, status="SKIPPED", error=msg)
+                    self._audit.record("PLACE_ORDER", "SKIPPED", {"local_id": local_id, "intent": asdict(intent)}, msg)
+                    logger.info(msg)
+                    return PlaceOrderResult(False, local_id, None, None, False, error=msg)
+
             body = {
                 "data": {
                     "order": signed.order,
