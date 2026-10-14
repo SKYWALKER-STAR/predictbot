@@ -33,6 +33,8 @@ predictbot/
 │   ├── market_data.py
 │   ├── order_manager.py
 │   ├── order_signer.py
+│   ├── position_tracker.py
+│   ├── redis_client.py
 │   ├── types.py
 │   └── ws_feed.py
 ├── database/
@@ -89,7 +91,23 @@ cp .env.example .env
 - STRATEGY_COOLDOWN_SECONDS
 - MAX_ORDER_USDT
 
-## 安装
+做市策略（market_maker）专项变量：
+
+- MM_QUOTE_SIZE：每单份额数（默认 8）
+- MM_HALF_SPREAD_BPS：半价差（bps，默认 60）
+- MM_MIN_SPREAD_BPS：触发报价所需的最小盘口价差（bps，默认 20）
+- MM_REFRESH_SECONDS：最小报价刷新间隔秒数（默认 2.5）
+- MM_MIN_LEVEL_SIZE：盘口最小深度要求（默认 1）
+- MM_OUTCOME：报价的结果方向，例如 YES
+- MM_MAX_POSITION_SHARES：触发买单压制前的最大库存上限（默认 50）
+- MM_INVENTORY_SKEW_BPS：满仓时的最大价格偏移（bps，默认 30）
+- MM_POSITION_RECONCILE_SECONDS：向 API 对账持仓的频率秒数（默认 30）
+
+Redis（可选）：
+
+- REDIS_URL：连接地址，例如 redis://localhost:6379/0；留空则禁用
+- REDIS_POSITIONS_KEY：库存数据写入的 Redis Hash 键名（默认 predictbot:positions）
+- REDIS_POSITIONS_TTL：Redis 键 TTL 秒数（默认 300）
 
 ```bash
 pip install -r requirements.txt
@@ -126,6 +144,21 @@ python bot.py
 - audit_logs：操作与错误审计
 
 可通过 DATABASE_URL 切换到 Postgres。
+
+## Redis 库存缓存
+
+配置 `REDIS_URL` 后，`PositionTracker` 在每次 API 对账后将库存写入 Redis Hash：
+
+```
+Key:   predictbot:positions   (REDIS_POSITIONS_KEY)
+Field: {market_id}:{token_id}
+Value: 份额数量（Decimal 字符串）
+TTL:   300 s                  (REDIS_POSITIONS_TTL)
+```
+
+启动时机器人会先尝试从 Redis 加载库存（warm-start），再进行第一次 API 对账，重启后库存立即可用。
+
+`REDIS_URL` 留空时，所有 Redis 操作被跳过，退回纯内存缓存行为。
 
 ## 安全建议
 

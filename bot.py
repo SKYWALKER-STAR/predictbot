@@ -13,6 +13,8 @@ from core.http_client import PredictHttpClient
 from core.market_data import MarketDataService
 from core.order_manager import OrderManager
 from core.order_signer import build_default_signer
+from core.position_tracker import PositionTracker
+from core.redis_client import close_redis
 from core.ws_feed import PredictWsFeed
 from database.connection import init_db
 from strategy.base import BaseStrategy
@@ -48,6 +50,7 @@ class PredictBot:
         self._audit = AuditLogger()
         self._market_data = MarketDataService(self._http, self._ws)
         self._order_manager = OrderManager(self._http, build_default_signer(), self._audit)
+        self._position_tracker = PositionTracker(self._http, settings.mm_position_reconcile_seconds)
         self._strategies = []
 
     async def start(self) -> None:
@@ -142,6 +145,7 @@ class PredictBot:
             except asyncio.CancelledError:
                 pass
             await self._http.close()
+            await close_redis()
             logger.info("=== PredictBot stopped ===")
 
     def stop(self) -> None:
@@ -164,9 +168,9 @@ class PredictBot:
         if mode == "ws_spread":
             return [WsSpreadStrategy(market_data=self._market_data, market_ids=market_ids)]
         if mode == "market_maker":
-            return [BasicMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids)]
+            return [BasicMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids, position_tracker=self._position_tracker)]
         logger.warning("Unknown STRATEGY_MODE=%s, fallback to market_maker", settings.strategy_mode)
-        return [BasicMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids)]
+        return [BasicMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids, position_tracker=self._position_tracker)]
 
 
 async def main() -> None:

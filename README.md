@@ -33,6 +33,8 @@ predictbot/
 │   ├── market_data.py
 │   ├── order_manager.py
 │   ├── order_signer.py
+│   ├── position_tracker.py
+│   ├── redis_client.py
 │   ├── types.py
 │   └── ws_feed.py
 ├── database/
@@ -89,7 +91,23 @@ Strategy/risk:
 - `STRATEGY_COOLDOWN_SECONDS`
 - `MAX_ORDER_USDT`
 
-## Install
+Market maker strategy:
+
+- `MM_QUOTE_SIZE`: shares per order (default `8`)
+- `MM_HALF_SPREAD_BPS`: half-spread in basis points (default `60`)
+- `MM_MIN_SPREAD_BPS`: minimum book spread to quote (default `20`)
+- `MM_REFRESH_SECONDS`: minimum seconds between quote refreshes (default `2.5`)
+- `MM_MIN_LEVEL_SIZE`: minimum top-of-book size to proceed (default `1`)
+- `MM_OUTCOME`: which outcome to quote, e.g. `YES`
+- `MM_MAX_POSITION_SHARES`: inventory cap before BUY orders are suppressed (default `50`)
+- `MM_INVENTORY_SKEW_BPS`: max price skew applied at full inventory (default `30`)
+- `MM_POSITION_RECONCILE_SECONDS`: how often to reconcile positions with the API (default `30`)
+
+Redis (optional):
+
+- `REDIS_URL`: connection URL, e.g. `redis://localhost:6379/0`; leave empty to disable
+- `REDIS_POSITIONS_KEY`: Redis Hash key for inventory data (default `predictbot:positions`)
+- `REDIS_POSITIONS_TTL`: TTL in seconds for the Redis key (default `300`)
 
 ```bash
 pip install -r requirements.txt
@@ -126,6 +144,21 @@ Default DB is SQLite (`predictbot.db`):
 - `audit_logs`: action and error trail
 
 Use `DATABASE_URL` to switch to Postgres if needed.
+
+## Redis Inventory Cache
+
+When `REDIS_URL` is configured, `PositionTracker` writes the current inventory to a Redis Hash after every API reconcile:
+
+```
+Key:   predictbot:positions   (REDIS_POSITIONS_KEY)
+Field: {market_id}:{token_id}
+Value: decimal share amount string
+TTL:   300 s                  (REDIS_POSITIONS_TTL)
+```
+
+On startup the bot attempts to warm-start from Redis before the first API reconcile, so inventory is available immediately after a restart.
+
+If `REDIS_URL` is empty, all Redis operations are skipped and the bot falls back to in-memory-only behavior.
 
 ## Security Checklist
 

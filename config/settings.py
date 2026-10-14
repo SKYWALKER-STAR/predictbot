@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     mm_refresh_seconds: float = Field(default=2.5, alias="MM_REFRESH_SECONDS", ge=0.2)
     mm_min_level_size: float = Field(default=1.0, alias="MM_MIN_LEVEL_SIZE", ge=0)
     mm_outcome: str = Field(default="YES", alias="MM_OUTCOME")
+    mm_max_position_shares: float = Field(default=50.0, alias="MM_MAX_POSITION_SHARES", gt=0)
+    mm_inventory_skew_bps: float = Field(default=30.0, alias="MM_INVENTORY_SKEW_BPS", ge=0)
+    mm_position_reconcile_seconds: float = Field(default=30.0, alias="MM_POSITION_RECONCILE_SECONDS", ge=5.0)
 
     order_expiration_seconds: int = Field(default=300, alias="ORDER_EXPIRATION_SECONDS", ge=30)
 
@@ -47,6 +50,10 @@ class Settings(BaseSettings):
     eip712_verifying_contract: str = Field(default="", alias="EIP712_VERIFYING_CONTRACT")
 
     database_url: str = Field(default="sqlite:///predictbot.db", alias="DATABASE_URL")
+
+    redis_url: str = Field(default="", alias="REDIS_URL")
+    redis_positions_key: str = Field(default="predictbot:positions", alias="REDIS_POSITIONS_KEY")
+    redis_positions_ttl: int = Field(default=300, alias="REDIS_POSITIONS_TTL", ge=10)
 
     @field_validator("predict_env")
     @classmethod
