@@ -98,7 +98,8 @@ Market maker strategy:
 - `MM_MIN_SPREAD_BPS`: minimum book spread to quote (default `20`)
 - `MM_REFRESH_SECONDS`: minimum seconds between quote refreshes (default `2.5`)
 - `MM_MIN_LEVEL_SIZE`: minimum top-of-book size to proceed (default `1`)
-- `MM_OUTCOME`: which outcome to quote, e.g. `YES`
+- `MM_OUTCOME`: `AUTO` (recommended) — dynamically quotes the high-probability side; or `YES`/`NO` to fix the outcome
+- `MM_MIN_PROBABILITY`: minimum probability the favoured side must reach before quoting (default `0.55`); prevents quoting near-50/50 markets
 - `MM_MAX_POSITION_SHARES`: inventory cap before BUY orders are suppressed (default `50`)
 - `MM_INVENTORY_SKEW_BPS`: max price skew applied at full inventory (default `30`)
 - `MM_POSITION_RECONCILE_SECONDS`: how often to reconcile positions with the API (default `30`)

@@ -98,7 +98,8 @@ cp .env.example .env
 - MM_MIN_SPREAD_BPS：触发报价所需的最小盘口价差（bps，默认 20）
 - MM_REFRESH_SECONDS：最小报价刷新间隔秒数（默认 2.5）
 - MM_MIN_LEVEL_SIZE：盘口最小深度要求（默认 1）
-- MM_OUTCOME：报价的结果方向，例如 YES
+- MM_OUTCOME：`AUTO`（推荐）— 动态报价高概率那一边；或填 `YES`/`NO` 固定报价方向
+- MM_MIN_PROBABILITY：自动选边时，高概率方的最低概率门槛（默认 0.55）；低于此值说明市场接近 50/50，跳过不报价
 - MM_MAX_POSITION_SHARES：触发买单压制前的最大库存上限（默认 50）
 - MM_INVENTORY_SKEW_BPS：满仓时的最大价格偏移（bps，默认 30）
 - MM_POSITION_RECONCILE_SECONDS：向 API 对账持仓的频率秒数（默认 30）
