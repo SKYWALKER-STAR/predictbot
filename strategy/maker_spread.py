@@ -52,7 +52,12 @@ class WsSpreadStrategy(BaseStrategy):
                 continue
 
             side = "BUY" if imbalance > 0 else "SELL"
-            outcome = "YES"
+            # Market orderbook prices belong to indexSet=1, regardless of its name.
+            matches = [o for o in market.outcomes if o.index_set == 1]
+            if len(matches) != 1 or not matches[0].on_chain_id:
+                logger.warning("[%s] missing or ambiguous book outcome: market=%s", self.name, market_id)
+                continue
+            selected = matches[0]
             ref_price = bid_price if side == "BUY" else ask_price
             edge = min(spread / 4.0, 0.01)
             px = round(ref_price + edge if side == "BUY" else ref_price - edge, 4)
@@ -61,7 +66,8 @@ class WsSpreadStrategy(BaseStrategy):
             intents.append(
                 TradeIntent(
                     market_id=market_id,
-                    outcome=outcome,
+                    outcome=selected.name,
+                    token_id=selected.on_chain_id,
                     side=side,
                     strategy="LIMIT",
                     quantity=settings.strategy_base_order_size,

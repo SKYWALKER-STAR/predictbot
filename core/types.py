@@ -59,6 +59,7 @@ class TradeIntent:
     strategy: str
     quantity: float
     price_per_share: float
+    token_id: str
     reason: str = ""
 
 

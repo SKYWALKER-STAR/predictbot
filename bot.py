@@ -16,6 +16,7 @@ from core.order_signer import build_default_signer
 from core.position_tracker import PositionTracker
 from core.redis_client import close_redis
 from core.ws_feed import PredictWsFeed
+from core.types import MarketSummary, TradeIntent
 from database.connection import init_db
 from strategy.base import BaseStrategy
 from strategy.market_maker import BasicMarketMakerStrategy
@@ -108,7 +109,7 @@ class PredictBot:
                                     intent.price_per_share,
                                     intent.quantity)
 
-                        token_id = self._resolve_token_id(market.outcomes, intent.outcome)
+                        token_id = self._resolve_token_id(market, intent)
                         if not token_id:
                             logger.warning("No tokenId found: market=%s outcome=%s", intent.market_id, intent.outcome)
                             continue
@@ -122,6 +123,8 @@ class PredictBot:
                             is_yield_bearing=market.is_yield_bearing,
                         )
                         if result.success:
+                            if isinstance(strategy, BasicMarketMakerStrategy) and result.order_hash and not result.is_dry_run:
+                                strategy.record_quote(result.order_hash)
                             logger.info(
                                 "Order accepted: market=%s side=%s price=%.4f qty=%.4f dry=%s",
                                 intent.market_id,
@@ -152,14 +155,15 @@ class PredictBot:
         self._running = False
 
     @staticmethod
-    def _resolve_token_id(outcomes: list, target_outcome: str) -> str:
-        target = target_outcome.strip().lower()
-        for outcome in outcomes:
-            if outcome.name.strip().lower() == target:
-                return outcome.on_chain_id
-        if outcomes:
-            return outcomes[0].on_chain_id
-        return ""
+    def _resolve_token_id(market: MarketSummary, intent: TradeIntent) -> str:
+        # Identity comes from the API token ID, never from a display name.
+        if market.market_id != intent.market_id or not intent.token_id:
+            return ""
+        matches = [o for o in market.outcomes if o.on_chain_id == intent.token_id]
+        if len(matches) != 1:
+            return ""
+        intent.outcome = matches[0].name  # Keep audit/display labels current.
+        return matches[0].on_chain_id
 
     def _build_strategies(self, market_ids: list[int]) -> list[BaseStrategy]:
         if not settings.strategy_enabled:
@@ -168,9 +172,9 @@ class PredictBot:
         if mode == "ws_spread":
             return [WsSpreadStrategy(market_data=self._market_data, market_ids=market_ids)]
         if mode == "market_maker":
-            return [BasicMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids, position_tracker=self._position_tracker)]
+            return [BasicMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids, position_tracker=self._position_tracker, order_manager=self._order_manager)]
         logger.warning("Unknown STRATEGY_MODE=%s, fallback to market_maker", settings.strategy_mode)
-        return [BasicMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids, position_tracker=self._position_tracker)]
+        return [BasicMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids, position_tracker=self._position_tracker, order_manager=self._order_manager)]
 
 
 async def main() -> None:

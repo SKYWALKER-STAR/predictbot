@@ -6,19 +6,12 @@ import time
 
 from config.settings import settings
 from core.market_data import MarketDataService
+from core.order_manager import OrderManager
 from core.position_tracker import PositionTracker
-from core.types import MarketOutcome, TradeIntent
+from core.types import TradeIntent
 from strategy.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_token_id(outcomes: list[MarketOutcome], target_outcome: str) -> str:
-    target = target_outcome.strip().lower()
-    for outcome in outcomes:
-        if outcome.name.strip().lower() == target:
-            return outcome.on_chain_id
-    return outcomes[0].on_chain_id if outcomes else ""
 
 
 class BasicMarketMakerStrategy(BaseStrategy):
@@ -38,11 +31,14 @@ class BasicMarketMakerStrategy(BaseStrategy):
         market_data: MarketDataService,
         market_ids: list[int],
         position_tracker: PositionTracker,
+        order_manager: OrderManager,
     ) -> None:
         self._market_data = market_data
         self._market_ids = market_ids
         self._positions = position_tracker
         self._last_quote_ts = 0.0
+        self._orders = order_manager
+        self._quote_hashes: list[str] = []
 
     async def on_start(self) -> None:
         await self._positions.load_from_redis()
@@ -65,6 +61,14 @@ class BasicMarketMakerStrategy(BaseStrategy):
         now = time.time()
         if now - self._last_quote_ts < settings.mm_refresh_seconds:
             return []
+
+        # Replace the previous quote set before placing new quotes, including
+        # when the market no longer qualifies. Keep hashes on failure to retry.
+        if not await self._orders.cancel_by_hashes(self._quote_hashes):
+            logger.error("[%s] quote cancellation failed; suppressing new quotes", self.name)
+            return []
+        self._quote_hashes.clear()
+        self._last_quote_ts = now
 
         intents: list[TradeIntent] = []
         for market_id in self._market_ids:
@@ -91,31 +95,33 @@ class BasicMarketMakerStrategy(BaseStrategy):
 
             yes_mid = (best_bid + best_ask) / 2.0
 
-            # Select which outcome to quote.
-            # AUTO: always quote on the high-probability side (mid > 0.50) so both
-            # BID and ASK land in a liquid part of the book.  When neither side
-            # clears mm_min_probability the market is too uncertain to quote.
-            mm_outcome_cfg = settings.mm_outcome.strip().upper()
-            if mm_outcome_cfg == "AUTO":
-                high_prob = max(yes_mid, 1.0 - yes_mid)
-                if high_prob < settings.mm_min_probability:
-                    logger.info(
-                        "[%s] market=%s skipped: high_prob=%.3f < mm_min_probability=%.2f",
-                        self.name, market_id, high_prob, settings.mm_min_probability,
-                    )
-                    continue
-                if yes_mid >= 0.50:
-                    outcome = "YES"
-                    mid = yes_mid
-                else:
-                    # Quote NO; prices are the mirror of the YES book.
-                    outcome = "NO"
-                    mid = 1.0 - yes_mid
+            # The market book represents indexSet=1; indexSet=2 is its complement.
+            by_index = {o.index_set: o for o in market.outcomes}
+            if len(market.outcomes) != 2 or set(by_index) != {1, 2}:
+                logger.warning("[%s] unsupported outcomes: market=%s", self.name, market_id)
+                continue
+            cfg = settings.mm_outcome.strip().upper()
+            if cfg == "AUTO":
+                selected = by_index[1 if yes_mid >= 0.5 else 2]
             else:
-                outcome = mm_outcome_cfg
-                mid = yes_mid
+                selected = next((o for o in market.outcomes if o.name.strip().upper() == cfg), None)
+                if selected is None and cfg in {"YES", "NO"}:
+                    selected = by_index[1 if cfg == "YES" else 2]
+                if selected is None:
+                    logger.warning("[%s] unknown outcome=%s market=%s", self.name, cfg, market_id)
+                    continue
 
-            token_id = _resolve_token_id(market.outcomes, outcome)
+            mid = yes_mid if selected.index_set == 1 else 1.0 - yes_mid
+            if not math.isfinite(mid) or mid <= settings.mm_min_probability or math.isclose(
+                mid, settings.mm_min_probability, rel_tol=0.0, abs_tol=1e-12
+            ):
+                logger.info("[%s] market=%s outcome=%s skipped: mid=%.4f <= threshold=%.4f",
+                            self.name, market_id, selected.name, mid, settings.mm_min_probability)
+                continue
+            outcome = selected.name
+            token_id = selected.on_chain_id
+            if not token_id:
+                continue
 
             net_shares = float(await self._positions.get_net_shares(market_id, token_id))
             max_shares = settings.mm_max_position_shares
@@ -144,6 +150,7 @@ class BasicMarketMakerStrategy(BaseStrategy):
                 intents.append(TradeIntent(
                     market_id=market_id,
                     outcome=outcome,
+                    token_id=token_id,
                     side="BUY",
                     strategy="LIMIT",
                     quantity=buy_qty,
@@ -154,6 +161,7 @@ class BasicMarketMakerStrategy(BaseStrategy):
             intents.append(TradeIntent(
                 market_id=market_id,
                 outcome=outcome,
+                token_id=token_id,
                 side="SELL",
                 strategy="LIMIT",
                 quantity=sell_qty,
@@ -161,9 +169,12 @@ class BasicMarketMakerStrategy(BaseStrategy):
                 reason=reason,
             ))
 
-        if intents:
-            self._last_quote_ts = now
         return intents
 
+    def record_quote(self, order_hash: str) -> None:
+        self._quote_hashes.append(order_hash)
+
     async def on_stop(self) -> None:
+        if not await self._orders.cancel_by_hashes(self._quote_hashes):
+            logger.error("[%s] failed to cancel quotes on stop", self.name)
         logger.info("[%s] stopped", self.name)
