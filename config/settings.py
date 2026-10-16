@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     target_market_ids: str = Field(default="", alias="TARGET_MARKET_IDS")
 
     max_order_usdt: float = Field(default=20.0, alias="MAX_ORDER_USDT", gt=0)
+    max_position_cost_ratio: float = Field(default=0.30, alias="MAX_POSITION_COST_RATIO", ge=0, le=1)
     max_open_orders: int = Field(default=5, alias="MAX_OPEN_ORDERS", ge=1)
 
     strategy_enabled: bool = Field(default=True, alias="STRATEGY_ENABLED")

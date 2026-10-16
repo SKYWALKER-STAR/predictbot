@@ -92,26 +92,32 @@ class PredictHttpClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def get_orders(self, first: int = 100) -> dict[str, Any]:
-        resp = await self._client.get("/v1/orders", headers=self._headers(with_jwt=True), params={"first": first})
+    async def get_orders(self, first: int = 100, after: str | None = None) -> dict[str, Any]:
+        params: dict[str, Any] = {"first": first}
+        if after:
+            params["after"] = after
+        resp = await self._client.get("/v1/orders", headers=self._headers(with_jwt=True), params=params)
         resp.raise_for_status()
         return resp.json()
 
     async def get_open_buy_reserved_usdt(self, first: int = 200) -> Decimal:
-        payload = await self.get_orders(first=first)
+        rows = await self._collect_pages(self.get_orders, first=first)
         total = Decimal("0")
-        for row in payload.get("data", []):
-            if not isinstance(row, dict):
-                continue
+        for row in rows:
+            if not isinstance(row.get("status"), str):
+                raise ValueError("Missing order status")
             if str(row.get("status", "")).upper() != "OPEN":
                 continue
             order = row.get("order")
             if not isinstance(order, dict):
-                continue
-            if int(order.get("side", -1)) != 0:
+                raise ValueError("Missing open order data")
+            if str(order.get("side")) not in {"0", "1"}:
+                raise ValueError("Invalid open order side")
+            if int(order["side"]) != 0:
                 continue
             maker_amount_wei = order.get("makerAmount")
-            total += self._parse_wei_to_decimal(maker_amount_wei)
+            # Conservatively reserve the full original amount for partial fills.
+            total += self._nonnegative_decimal(maker_amount_wei, "makerAmount") / Decimal(10**18)
         return total
 
     async def get_wallet_usdt_balance(self) -> Decimal | None:
@@ -144,10 +150,12 @@ class PredictHttpClient:
             return True
         return False
 
-    async def get_positions(self, first: int = 100, include_lost: bool = False, market_id: int | None = None) -> dict[str, Any]:
+    async def get_positions(self, first: int = 100, include_lost: bool = False, market_id: int | None = None, after: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {"first": first, "includeLost": str(include_lost).lower()}
         if market_id is not None:
             params["marketId"] = market_id
+        if after:
+            params["after"] = after
         resp = await self._client.get(
             "/v1/positions",
             headers=self._headers(with_jwt=True),
@@ -156,9 +164,65 @@ class PredictHttpClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def _collect_pages(self, fetch, **kwargs) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        after = None
+        for _ in range(1000):
+            payload = await fetch(after=after, **kwargs)
+            if not isinstance(payload, dict) or payload.get("success") is False:
+                raise ValueError("Unsuccessful paginated response")
+            page = payload.get("data")
+            if not isinstance(page, list) or any(not isinstance(row, dict) for row in page):
+                raise ValueError("Invalid paginated response data")
+            rows.extend(page)
+            cursor = payload.get("cursor")
+            if not cursor:
+                return rows
+            if not isinstance(cursor, str) or cursor in seen:
+                raise ValueError("Invalid or repeated pagination cursor")
+            seen.add(cursor)
+            after = cursor
+        raise ValueError("Pagination limit exceeded")
+
+    async def get_all_positions(self, market_id: int | None = None) -> list[dict[str, Any]]:
+        return await self._collect_pages(
+            self.get_positions, first=200, include_lost=False, market_id=market_id,
+        )
+
+    @staticmethod
+    def _nonnegative_decimal(raw: Any, field: str) -> Decimal:
+        try:
+            value = Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            raise ValueError(f"Missing or invalid {field}") from None
+        if not value.is_finite() or value < 0:
+            raise ValueError(f"Invalid {field}")
+        return value
+
+    async def get_position_cost_usdt(self) -> Decimal:
+        """Fresh account-wide remaining cost; never substitute stale/zero data.
+
+        Integer amount strings are wei shares, decimal amounts are shares (as
+        in the existing position parser). averageBuyPriceUsd is decimal USD per
+        share, NOT wei. API average-price accounting is used without adding fees.
+        """
+        total = Decimal("0")
+        for row in await self.get_all_positions():
+            raw = row.get("amount")
+            amount = self._nonnegative_decimal(raw, "position amount")
+            if "." not in str(raw):
+                amount /= Decimal(10**18)
+            if amount == 0:
+                continue
+            price = self._nonnegative_decimal(row.get("averageBuyPriceUsd"), "averageBuyPriceUsd")
+            if price > 1:
+                raise ValueError("averageBuyPriceUsd exceeds 1; verify API units")
+            total += amount * price
+        return total
+
     async def get_outcome_shares(self, token_id: str, market_id: int | None = None) -> Decimal:
-        payload = await self.get_positions(first=200, include_lost=False, market_id=market_id)
-        rows = payload.get("data", [])
+        rows = await self.get_all_positions(market_id=market_id)
         total = Decimal("0")
         for row in rows:
             if not isinstance(row, dict):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -21,8 +22,25 @@ class OrderManager:
         self._http = http_client
         self._signer = signer
         self._audit = audit
+        self._placement_lock = asyncio.Lock()
 
     async def place_order(
+        self,
+        intent: TradeIntent,
+        *,
+        token_id: str,
+        fee_rate_bps: int,
+        is_neg_risk: bool,
+        is_yield_bearing: bool,
+    ) -> PlaceOrderResult:
+        # Keep account checks and submission serialized within this manager.
+        async with self._placement_lock:
+            return await self._place_order(
+                intent, token_id=token_id, fee_rate_bps=fee_rate_bps,
+                is_neg_risk=is_neg_risk, is_yield_bearing=is_yield_bearing,
+            )
+
+    async def _place_order(
         self,
         intent: TradeIntent,
         *,
@@ -74,10 +92,31 @@ class OrderManager:
             )
 
             if side == 0:
-                new_buy_cost = Decimal(str(signed.order.get("makerAmount", "0"))) / Decimal(10**18)
+                new_buy_cost = self._http._nonnegative_decimal(signed.order.get("makerAmount"), "makerAmount") / Decimal(10**18)
+                if new_buy_cost <= 0:
+                    raise ValueError("Invalid BUY cost")
                 reserved_buy = await self._http.get_open_buy_reserved_usdt(first=200)
                 usdt_balance = await self._http.get_wallet_usdt_balance()
-                if usdt_balance is not None and reserved_buy + new_buy_cost > usdt_balance:
+                if usdt_balance is None:
+                    raise ValueError("Cannot verify BUY risk: wallet USDT balance unavailable")
+                usdt_balance = self._http._nonnegative_decimal(usdt_balance, "wallet USDT balance")
+                reserved_buy = self._http._nonnegative_decimal(reserved_buy, "reserved BUY cost")
+                position_cost = await self._http.get_position_cost_usdt()
+                position_cost = self._http._nonnegative_decimal(position_cost, "position cost")
+                cost_limit = (usdt_balance + position_cost) * Decimal(str(settings.max_position_cost_ratio))
+                projected_cost = position_cost + reserved_buy + new_buy_cost
+                if projected_cost > cost_limit:
+                    msg = (
+                        "skip BUY due to position cost cap: "
+                        f"position={position_cost:.6f} reserved={reserved_buy:.6f} "
+                        f"new={new_buy_cost:.6f} limit={cost_limit:.6f} "
+                        f"balance={usdt_balance:.6f} ratio={settings.max_position_cost_ratio}"
+                    )
+                    self._update_local(local_id, status="SKIPPED", error=msg)
+                    self._audit.record("PLACE_ORDER", "SKIPPED", {"local_id": local_id, "intent": asdict(intent)}, msg)
+                    logger.info(msg)
+                    return PlaceOrderResult(False, local_id, None, None, False, error=msg)
+                if reserved_buy + new_buy_cost > usdt_balance:
                     msg = (
                         "skip BUY due to collateral cap: "
                         f"balance={usdt_balance:.6f} reserved={reserved_buy:.6f} new={new_buy_cost:.6f}"

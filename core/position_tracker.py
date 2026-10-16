@@ -72,12 +72,14 @@ class PositionTracker:
 
     async def _do_reconcile(self) -> None:
         try:
-            payload = await self._http.get_positions(first=200)
+            rows = await self._http.get_all_positions()
             new_cache: dict[tuple[int, str], Decimal] = {}
-            for row in payload.get("data", []):
+            for row in rows:
                 if not isinstance(row, dict):
                     continue
                 market_id = row.get("marketId")
+                if market_id is None and isinstance(row.get("market"), dict):
+                    market_id = row["market"].get("id")
                 outcome = row.get("outcome")
                 if not isinstance(outcome, dict):
                     continue

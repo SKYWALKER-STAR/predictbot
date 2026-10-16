@@ -1,5 +1,13 @@
 # PredictBot
 
+Global live BUY cost cap: set `MAX_POSITION_COST_RATIO=0.30` (default 30%, range
+0–1; zero blocks new buys). Remaining position cost plus open BUY reservations
+plus the new order must not exceed `(wallet USDT balance + position cost) * ratio`.
+Position cost uses API `averageBuyPriceUsd` times remaining shares, not market
+value. Missing risk data blocks buys; sells retain their existing share checks.
+Dry runs do not simulate account-level risk. See the Chinese README for unit
+assumptions, pagination, conservative partial-fill reservations and API latency limits.
+
 中文文档: [README.zh-CN.md](README.zh-CN.md)
 
 PredictBot is a Python trading bot framework for predict.fun, designed with a structure similar to polybot and optimized around WebSocket market data.
