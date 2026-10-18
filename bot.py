@@ -20,6 +20,7 @@ from core.types import MarketSummary, TradeIntent
 from database.connection import init_db
 from strategy.base import BaseStrategy
 from strategy.market_maker import BasicMarketMakerStrategy
+from strategy.inventory_market_maker import InventoryMarketMakerStrategy
 from strategy.maker_spread import WsSpreadStrategy
 
 logger = logging.getLogger(__name__)
@@ -173,6 +174,8 @@ class PredictBot:
             return [WsSpreadStrategy(market_data=self._market_data, market_ids=market_ids)]
         if mode == "market_maker":
             return [BasicMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids, position_tracker=self._position_tracker, order_manager=self._order_manager)]
+        if mode == "inventory_market_maker":
+            return [InventoryMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids, position_tracker=self._position_tracker, order_manager=self._order_manager)]
         logger.warning("Unknown STRATEGY_MODE=%s, fallback to market_maker", settings.strategy_mode)
         return [BasicMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids, position_tracker=self._position_tracker, order_manager=self._order_manager)]
 

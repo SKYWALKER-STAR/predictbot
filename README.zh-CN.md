@@ -4,6 +4,10 @@ PredictBot 是一个面向 predict.fun 的 Python 交易机器人框架，整体
 
 默认安全模式：DRY_RUN=true。
 
+新增论文库存做市策略：设置 `STRATEGY_MODE=inventory_market_maker`，通过
+`MM_INVENTORY_MODEL=as|glft` 选择 AS 近似公式或 GLFT 有限库存模型。
+完整公式、参数单位、启用示例与二元结算限制见 [库存做市说明](docs/inventory_market_maker.md)。
+
 ## 全局持仓成本限额
 
 在 `.env` 配置 `MAX_POSITION_COST_RATIO=0.30`（默认 30%，范围 0 到 1；0 禁止新增买入）。

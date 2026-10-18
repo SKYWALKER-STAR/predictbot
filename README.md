@@ -1,5 +1,8 @@
 # PredictBot
 
+Paper-based inventory market making is available with `STRATEGY_MODE=inventory_market_maker`
+and `MM_INVENTORY_MODEL=as|glft`. See [model equations, configuration and execution limitations](docs/inventory_market_maker.md).
+
 Global live BUY cost cap: set `MAX_POSITION_COST_RATIO=0.30` (default 30%, range
 0–1; zero blocks new buys). Remaining position cost plus open BUY reservations
 plus the new order must not exceed `(wallet USDT balance + position cost) * ratio`.

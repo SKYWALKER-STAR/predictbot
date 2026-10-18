@@ -31,9 +31,9 @@ class PositionTracker:
         await self._maybe_reconcile()
         return self._cache.get((int(market_id), str(token_id)), Decimal("0"))
 
-    async def force_reconcile(self) -> None:
+    async def force_reconcile(self) -> bool:
         """Unconditionally fetch positions from the API and rebuild the cache."""
-        await self._do_reconcile()
+        return await self._do_reconcile()
 
     async def load_from_redis(self) -> bool:
         """Seed in-memory cache from Redis (warm-start after restart).
@@ -70,29 +70,40 @@ class PositionTracker:
         if time.monotonic() - self._last_reconcile >= self._reconcile_interval:
             await self._do_reconcile()
 
-    async def _do_reconcile(self) -> None:
+    async def _do_reconcile(self) -> bool:
         try:
             rows = await self._http.get_all_positions()
             new_cache: dict[tuple[int, str], Decimal] = {}
             for row in rows:
                 if not isinstance(row, dict):
-                    continue
+                    raise ValueError("Invalid position row")
                 market_id = row.get("marketId")
                 if market_id is None and isinstance(row.get("market"), dict):
                     market_id = row["market"].get("id")
                 outcome = row.get("outcome")
                 if not isinstance(outcome, dict):
-                    continue
+                    raise ValueError("Missing position outcome")
                 token_id = outcome.get("onChainId")
                 if market_id is None or not token_id:
-                    continue
-                new_cache[(int(market_id), str(token_id))] = _parse_amount(row.get("amount"))
+                    raise ValueError("Missing position identity")
+                raw_amount = row.get("amount")
+                if raw_amount is None:
+                    raise ValueError("Missing position amount")
+                amount = Decimal(str(raw_amount))
+                if not amount.is_finite() or amount < 0:
+                    raise ValueError("Invalid position amount")
+                # Keep the API's established wei/decimal-share convention.
+                shares = _parse_amount(raw_amount)
+                key = (int(market_id), str(token_id))
+                new_cache[key] = new_cache.get(key, Decimal("0")) + shares
             self._cache = new_cache
             self._last_reconcile = time.monotonic()
             logger.debug("Positions reconciled: %d tokens", len(self._cache))
             await self._sync_to_redis(new_cache)
+            return True
         except Exception as exc:
             logger.warning("Position reconcile failed, using stale cache: %s", exc)
+            return False
 
     async def _sync_to_redis(self, cache: dict[tuple[int, str], Decimal]) -> None:
         redis = get_redis()

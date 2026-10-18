@@ -150,7 +150,7 @@ class OrderManager:
             logger.exception("place_order failed: %s", exc)
             return PlaceOrderResult(False, local_id, None, None, False, error=str(exc))
 
-    async def cancel_by_hashes(self, order_hashes: list[str]) -> bool:
+    async def cancel_by_hashes(self, order_hashes: list[str], *, verify: bool = False) -> bool:
         if not order_hashes:
             return True
 
@@ -159,7 +159,11 @@ class OrderManager:
             return True
 
         try:
-            await self._http.remove_orders_by_hash(order_hashes)
+            response = await self._http.remove_orders_by_hash(order_hashes)
+            if response.get("success") is False:
+                raise ValueError("Exchange rejected cancellation")
+            if verify and set(order_hashes) & await self._http.get_open_order_hashes():
+                raise ValueError("Quote orders remain OPEN after cancellation")
             self._audit.record("CANCEL_ORDERS", "SUCCESS", {"order_hashes": order_hashes})
             return True
         except Exception as exc:

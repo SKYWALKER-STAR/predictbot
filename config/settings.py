@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -43,6 +45,27 @@ class Settings(BaseSettings):
     mm_max_position_shares: float = Field(default=50.0, alias="MM_MAX_POSITION_SHARES", gt=0)
     mm_inventory_skew_bps: float = Field(default=30.0, alias="MM_INVENTORY_SKEW_BPS", ge=0)
     mm_position_reconcile_seconds: float = Field(default=30.0, alias="MM_POSITION_RECONCILE_SECONDS", ge=5.0)
+
+    # Paper models: absolute probability-price units and seconds, not bps/returns.
+    mm_inventory_model: Literal["as", "glft"] = Field(default="glft", alias="MM_INVENTORY_MODEL")
+    mm_risk_aversion: float = Field(default=0.1, alias="MM_RISK_AVERSION", gt=0, allow_inf_nan=False)
+    mm_order_decay_k: float = Field(default=100.0, alias="MM_ORDER_DECAY_K", gt=0, allow_inf_nan=False)
+    mm_arrival_rate_a: float = Field(default=0.5, alias="MM_ARRIVAL_RATE_A", gt=0, allow_inf_nan=False)
+    mm_initial_sigma: float = Field(default=0.003, alias="MM_INITIAL_SIGMA", gt=0, allow_inf_nan=False)
+    mm_volatility_window_seconds: float = Field(default=120, alias="MM_VOLATILITY_WINDOW_SECONDS", gt=0)
+    mm_volatility_min_samples: int = Field(default=10, alias="MM_VOLATILITY_MIN_SAMPLES", ge=2)
+    mm_model_horizon_seconds: float = Field(default=60, alias="MM_MODEL_HORIZON_SECONDS", gt=0, le=3600)
+    mm_max_book_age_seconds: float = Field(default=10, alias="MM_MAX_BOOK_AGE_SECONDS", gt=0)
+    # Explicit UTC-aware end times; no inference from market titles or API fields.
+    mm_market_end_times: dict[int, datetime] = Field(default_factory=dict, alias="MM_MARKET_END_TIMES")
+    mm_stop_before_end_seconds: float = Field(default=10, alias="MM_STOP_BEFORE_END_SECONDS", ge=0)
+
+    @field_validator("mm_market_end_times")
+    @classmethod
+    def _validate_end_times(cls, value: dict[int, datetime]) -> dict[int, datetime]:
+        if any(end.tzinfo is None or end.utcoffset() is None for end in value.values()):
+            raise ValueError("MM_MARKET_END_TIMES requires timezone-aware timestamps")
+        return value
 
     order_expiration_seconds: int = Field(default=300, alias="ORDER_EXPIRATION_SECONDS", ge=30)
 

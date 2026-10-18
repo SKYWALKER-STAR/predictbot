@@ -120,6 +120,21 @@ class PredictHttpClient:
             total += self._nonnegative_decimal(maker_amount_wei, "makerAmount") / Decimal(10**18)
         return total
 
+    async def get_open_order_hashes(self) -> set[str]:
+        """Full paginated snapshot used to confirm quote cancellation."""
+        hashes: set[str] = set()
+        for row in await self._collect_pages(self.get_orders, first=200):
+            status = row.get("status")
+            if not isinstance(status, str):
+                raise ValueError("Missing order status during cancellation verification")
+            if status.upper() != "OPEN":
+                continue
+            order = row.get("order")
+            if not isinstance(order, dict) or not order.get("hash"):
+                raise ValueError("Missing open order hash")
+            hashes.add(str(order["hash"]))
+        return hashes
+
     async def get_wallet_usdt_balance(self) -> Decimal | None:
         builder = self._get_balance_builder()
         if builder is None:
