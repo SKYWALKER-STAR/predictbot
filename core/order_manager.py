@@ -23,6 +23,7 @@ class OrderManager:
         self._signer = signer
         self._audit = audit
         self._placement_lock = asyncio.Lock()
+        self._pending_buys: dict[int, str | None] = {}
 
     async def place_order(
         self,
@@ -65,6 +66,20 @@ class OrderManager:
         expiration = int((datetime.now(timezone.utc) + timedelta(seconds=settings.order_expiration_seconds)).timestamp())
 
         try:
+            holdings = await self._http.get_market_holdings(intent.market_id)
+            has_inventory = any(amount > 0 for amount in holdings.values())
+            buys = await self._http.get_market_buy_hashes(intent.market_id)
+            if has_inventory and buys:
+                if not await self.cancel_by_hashes(buys, verify=True):
+                    raise ValueError("Cannot confirm cancellation of BUY orders while holding inventory")
+            if has_inventory:
+                self._pending_buys.pop(intent.market_id, None)
+            if side == 0 and (has_inventory or buys or intent.market_id in self._pending_buys):
+                msg = "skip BUY: market already has inventory or an open BUY order"
+                self._update_local(local_id, status="SKIPPED", error=msg)
+                self._audit.record("PLACE_ORDER", "SKIPPED", asdict(intent), msg)
+                logger.info("market=%s %s", intent.market_id, msg)
+                return PlaceOrderResult(False, local_id, None, None, False, error=msg)
             if side == 1:
                 available_shares = await self._http.get_outcome_shares(token_id, market_id=intent.market_id)
                 required_shares = Decimal(str(intent.quantity))
@@ -135,11 +150,16 @@ class OrderManager:
                     "isPostOnly": intent.strategy.upper() == "LIMIT",
                 }
             }
+            if side == 0:
+                # Reserve before submission; an ambiguous response must not permit retries.
+                self._pending_buys[intent.market_id] = None
             response = await self._http.create_order(body)
             logger.info("create_order response: %s", response)
             payload = response.get("data", {})
             order_hash = payload.get("orderHash")
             order_id = payload.get("orderId")
+            if side == 0:
+                self._pending_buys[intent.market_id] = order_hash
 
             self._update_local(local_id, status="OPEN", order_hash=order_hash, exchange_order_id=order_id)
             self._audit.record("PLACE_ORDER", "SUCCESS", {"local_id": local_id, "response": payload})
@@ -149,6 +169,21 @@ class OrderManager:
             self._audit.record("PLACE_ORDER", "FAILURE", {"local_id": local_id}, str(exc))
             logger.exception("place_order failed: %s", exc)
             return PlaceOrderResult(False, local_id, None, None, False, error=str(exc))
+
+    async def cancel_buys_if_holding(self, market_id: int) -> bool:
+        """Also clean up partial BUY remainders when a strategy emits no intents."""
+        if settings.dry_run:
+            return True
+        async with self._placement_lock:
+            try:
+                holdings = await self._http.get_market_holdings(market_id)
+                if any(amount > 0 for amount in holdings.values()):
+                    hashes = await self._http.get_market_buy_hashes(market_id)
+                    return await self.cancel_by_hashes(hashes, verify=True)
+                return True
+            except Exception:
+                logger.exception("Cannot verify entry orders: market=%s", market_id)
+                return False
 
     async def cancel_by_hashes(self, order_hashes: list[str], *, verify: bool = False) -> bool:
         if not order_hashes:
@@ -164,6 +199,10 @@ class OrderManager:
                 raise ValueError("Exchange rejected cancellation")
             if verify and set(order_hashes) & await self._http.get_open_order_hashes():
                 raise ValueError("Quote orders remain OPEN after cancellation")
+            if verify:
+                for market_id, order_hash in list(self._pending_buys.items()):
+                    if order_hash in order_hashes:
+                        del self._pending_buys[market_id]
             self._audit.record("CANCEL_ORDERS", "SUCCESS", {"order_hashes": order_hashes})
             return True
         except Exception as exc:

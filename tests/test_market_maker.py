@@ -30,9 +30,9 @@ class MarketMakerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_auto_selects_actual_complement_even_with_reordered_outcomes(self):
         intents = await self.quote(.30, .31)
-        self.assertEqual([i.outcome for i in intents], ['KC', 'KC'])
+        self.assertEqual([i.outcome for i in intents], ['KC'])
         self.assertTrue(all(.68 <= i.price_per_share <= .71 for i in intents))
-        self.positions.get_net_shares.assert_awaited_once_with(1, 'kc')
+        self.positions.get_net_shares.assert_any_await(1, 'kc')
         self.assertEqual(PredictBot._resolve_token_id(self.market, intents[0]), 'kc')
         intents[0].token_id = 'unknown'
         self.assertEqual(PredictBot._resolve_token_id(self.market, intents[0]), '')
@@ -42,7 +42,7 @@ class MarketMakerTests(unittest.IsolatedAsyncioTestCase):
             self.market.outcomes[0].name = name
             self.market.outcomes[0].on_chain_id = token
             intents = await self.quote(.30, .31)
-            self.assertEqual([i.token_id for i in intents], [token, token])
+            self.assertEqual([i.token_id for i in intents], [token])
             self.assertEqual(PredictBot._resolve_token_id(self.market, intents[0]), token)
             self.assertEqual(intents[0].outcome, name)
         self.market.outcomes[0].name = 'Renamed'
@@ -59,9 +59,15 @@ class MarketMakerTests(unittest.IsolatedAsyncioTestCase):
         intents[0].market_id = 999
         self.assertEqual(PredictBot._resolve_token_id(self.market, intents[0]), '')
 
+    async def test_holding_low_probability_outcome_only_sells_residual(self):
+        self.positions.get_net_shares.side_effect = lambda market, token: 2 if token == 'c9' else 0
+        self.settings.mm_min_order_value_usdt = .1
+        intents = await self.quote(.30, .31)
+        self.assertEqual([(i.side, i.token_id, i.quantity) for i in intents], [('SELL', 'c9', 2)])
+
     async def test_auto_first_direction(self):
         intents = await self.quote(.69, .70)
-        self.assertEqual([i.outcome for i in intents], ['C9', 'C9'])
+        self.assertEqual([i.outcome for i in intents], ['C9'])
 
     async def test_threshold_and_uncertain_market(self):
         for bid, ask in [(.54, .56), (.44, .46), (.49, .51)]:
@@ -81,7 +87,7 @@ class MarketMakerTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancel_old_quotes_when_threshold_fails(self):
         self.strategy.record_quote('old')
         calls = []
-        async def cancel(hashes):
+        async def cancel(hashes, **kwargs):
             calls.append(list(hashes))
             return True
         self.orders.cancel_by_hashes.side_effect = cancel
@@ -95,12 +101,12 @@ class MarketMakerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.quote(.30, .31), [])
         self.assertEqual(self.strategy._quote_hashes, ['old'])
         self.orders.cancel_by_hashes.return_value = True
-        self.assertEqual(len(await self.quote(.30, .31)), 2)
+        self.assertEqual(len(await self.quote(.30, .31)), 1)
 
     async def test_stop_cancels_quotes(self):
         self.strategy.record_quote('old')
         await self.strategy.on_stop()
-        self.orders.cancel_by_hashes.assert_awaited_once_with(['old'])
+        self.orders.cancel_by_hashes.assert_awaited_once_with(['old'], verify=True)
 
 
 if __name__ == '__main__':

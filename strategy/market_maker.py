@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from decimal import Decimal, ROUND_FLOOR
 
 from config.settings import settings
 from core.market_data import MarketDataService
@@ -64,12 +65,14 @@ class BasicMarketMakerStrategy(BaseStrategy):
 
         # Replace the previous quote set before placing new quotes, including
         # when the market no longer qualifies. Keep hashes on failure to retry.
-        if not await self._orders.cancel_by_hashes(self._quote_hashes):
+        if not await self._orders.cancel_by_hashes(self._quote_hashes, verify=True):
             logger.error("[%s] quote cancellation failed; suppressing new quotes", self.name)
             return []
         self._quote_hashes.clear()
         self._last_quote_ts = now
 
+        if not settings.dry_run and not await self._positions.force_reconcile():
+            return []
         intents: list[TradeIntent] = []
         for market_id in self._market_ids:
             market = self._market_data.get_market(market_id)
@@ -101,7 +104,14 @@ class BasicMarketMakerStrategy(BaseStrategy):
                 logger.warning("[%s] unsupported outcomes: market=%s", self.name, market_id)
                 continue
             cfg = settings.mm_outcome.strip().upper()
-            if cfg == "AUTO":
+            holdings = {i: float(await self._positions.get_net_shares(market_id, o.on_chain_id))
+                        for i, o in by_index.items()}
+            if not all(math.isfinite(v) and v >= 0 for v in holdings.values()):
+                continue
+            has_inventory = any(v > 0 for v in holdings.values())
+            if has_inventory:
+                selected = by_index[max(holdings, key=holdings.get)]
+            elif cfg == "AUTO":
                 selected = by_index[1 if yes_mid >= 0.5 else 2]
             else:
                 selected = next((o for o in market.outcomes if o.name.strip().upper() == cfg), None)
@@ -112,9 +122,9 @@ class BasicMarketMakerStrategy(BaseStrategy):
                     continue
 
             mid = yes_mid if selected.index_set == 1 else 1.0 - yes_mid
-            if not math.isfinite(mid) or mid <= settings.mm_min_probability or math.isclose(
+            if not has_inventory and (not math.isfinite(mid) or mid <= settings.mm_min_probability or math.isclose(
                 mid, settings.mm_min_probability, rel_tol=0.0, abs_tol=1e-12
-            ):
+            )):
                 logger.info("[%s] market=%s outcome=%s skipped: mid=%.4f <= threshold=%.4f",
                             self.name, market_id, selected.name, mid, settings.mm_min_probability)
                 continue
@@ -123,7 +133,7 @@ class BasicMarketMakerStrategy(BaseStrategy):
             if not token_id:
                 continue
 
-            net_shares = float(await self._positions.get_net_shares(market_id, token_id))
+            net_shares = holdings[selected.index_set]
             max_shares = settings.mm_max_position_shares
             inventory_ratio = max(-1.0, min(1.0, net_shares / max_shares))
             skew = inventory_ratio * settings.mm_inventory_skew_bps / 10_000.0
@@ -146,7 +156,7 @@ class BasicMarketMakerStrategy(BaseStrategy):
             buy_qty = round(max(settings.mm_quote_size, min_qty_bid), 6)
             sell_qty = round(max(settings.mm_quote_size, min_qty_ask), 6)
 
-            if net_shares < max_shares:
+            if not has_inventory and net_shares < max_shares:
                 intents.append(TradeIntent(
                     market_id=market_id,
                     outcome=outcome,
@@ -158,6 +168,10 @@ class BasicMarketMakerStrategy(BaseStrategy):
                     reason=reason,
                 ))
 
+            sell_qty = float(Decimal(str(min(sell_qty, net_shares))).quantize(
+                Decimal("0.000001"), rounding=ROUND_FLOOR))
+            if sell_qty <= 0 or sell_qty * ask_px < settings.mm_min_order_value_usdt:
+                continue
             intents.append(TradeIntent(
                 market_id=market_id,
                 outcome=outcome,
@@ -175,6 +189,6 @@ class BasicMarketMakerStrategy(BaseStrategy):
         self._quote_hashes.append(order_hash)
 
     async def on_stop(self) -> None:
-        if not await self._orders.cancel_by_hashes(self._quote_hashes):
+        if not await self._orders.cancel_by_hashes(self._quote_hashes, verify=True):
             logger.error("[%s] failed to cancel quotes on stop", self.name)
         logger.info("[%s] stopped", self.name)

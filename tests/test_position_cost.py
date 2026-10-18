@@ -71,6 +71,8 @@ class CostLimitOrderTests(unittest.IsolatedAsyncioTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.http = Mock(spec=PredictHttpClient)
+        self.http.get_market_holdings = AsyncMock(return_value={})
+        self.http.get_market_buy_hashes = AsyncMock(return_value=[])
         self.http._nonnegative_decimal = PredictHttpClient._nonnegative_decimal
         self.http.get_wallet_usdt_balance = AsyncMock(return_value=Decimal('700'))
         self.http.get_position_cost_usdt = AsyncMock(return_value=Decimal('300'))
@@ -90,11 +92,42 @@ class CostLimitOrderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_boundary_allowed_then_next_buy_blocked(self):
         self.assertTrue((await self.submit()).success)
+        self.manager._pending_buys.clear()  # Previous order has completed its lifecycle.
         self.http.get_open_buy_reserved_usdt.return_value = Decimal('100')
         result = await self.submit()
         self.assertFalse(result.success)
         self.assertIn('position cost cap', result.error)
         self.assertEqual(self.http.create_order.await_count, 1)
+
+    async def test_holdings_on_either_side_block_buy_but_allow_sell(self):
+        self.http.get_market_holdings.return_value = {'other-token': Decimal('0.1')}
+        self.assertFalse((await self.submit()).success)
+        self.http.create_order.assert_not_awaited()
+        self.assertTrue((await self.submit('SELL')).success)
+        self.http.get_market_holdings.return_value = {}
+        self.assertTrue((await self.submit()).success)
+
+    async def test_open_buy_and_local_pending_block_duplicate(self):
+        self.http.get_market_buy_hashes.return_value = ['existing']
+        self.assertFalse((await self.submit()).success)
+        self.http.get_market_buy_hashes.return_value = []
+        self.assertTrue((await self.submit()).success)
+        self.assertFalse((await self.submit()).success)
+        self.assertEqual(self.http.create_order.await_count, 1)
+
+    async def test_partial_fill_cancels_remaining_buy_before_exit(self):
+        self.http.get_market_holdings.return_value = {'token': Decimal(1)}
+        self.http.get_market_buy_hashes.return_value = ['partial']
+        self.manager.cancel_by_hashes = AsyncMock(return_value=True)
+        self.assertFalse((await self.submit()).success)
+        self.manager.cancel_by_hashes.assert_awaited_once_with(['partial'], verify=True)
+        self.manager.cancel_by_hashes.return_value = False
+        self.assertFalse((await self.submit('SELL')).success)
+
+    async def test_position_read_error_blocks_submission(self):
+        self.http.get_market_holdings.side_effect = ValueError('unavailable')
+        self.assertFalse((await self.submit()).success)
+        self.http.create_order.assert_not_awaited()
 
     async def test_dynamic_balance_changes_limit(self):
         self.http.get_wallet_usdt_balance.return_value = Decimal('600')

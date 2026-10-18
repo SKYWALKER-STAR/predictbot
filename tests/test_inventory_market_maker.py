@@ -36,10 +36,9 @@ class InventoryStrategyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_quotes_net_inventory_and_limits_to_owned_shares(self):
         intents = await self.quote()
-        self.assertEqual([i.side for i in intents], ["SELL", "BUY"])
+        self.assertEqual([i.side for i in intents], ["SELL"])
         self.assertTrue(all(i.token_id == "yes" and "net_shares=8.000000" in i.reason for i in intents))
         self.assertTrue(all(i.quantity == 8 for i in intents))
-        self.assertLess(intents[1].price_per_share, .61)
         self.assertGreater(intents[0].price_per_share, .59)
 
     async def test_auto_keeps_old_exposure_after_reversal(self):
@@ -60,8 +59,20 @@ class InventoryStrategyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_short_sales_or_min_notional_inflation(self):
         self.holdings = {"yes": 1, "no": 0}
-        self.assertEqual([i.side for i in await self.quote()], ["BUY"])
+        intents = await self.quote()
+        self.assertEqual([i.side for i in intents], ["SELL"])
+        self.assertEqual(intents[0].quantity, 1)
         self.settings.mm_min_order_value_usdt = 100
+        self.assertEqual(await self.quote(), [])
+
+    async def test_flat_required_before_buy_and_fixed_direction_can_exit(self):
+        self.settings.mm_outcome = 'YES'
+        for holdings in ({'yes': 8, 'no': 8}, {'yes': 0, 'no': 8}, {'yes': 1, 'no': 0}):
+            self.holdings = holdings
+            self.assertEqual([i.side for i in await self.quote()], ['SELL'])
+        self.holdings = {'yes': 0, 'no': 0}
+        self.assertEqual([i.side for i in await self.quote()], ['BUY'])
+        self.holdings = {'yes': .000001, 'no': 0}
         self.assertEqual(await self.quote(), [])
 
     async def test_cancel_before_position_read_and_failure_retry(self):

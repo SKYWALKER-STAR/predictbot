@@ -205,6 +205,41 @@ class PredictHttpClient:
             self.get_positions, first=200, include_lost=False, market_id=market_id,
         )
 
+    async def get_market_holdings(self, market_id: int) -> dict[str, Decimal]:
+        holdings: dict[str, Decimal] = {}
+        for row in await self.get_all_positions(market_id=market_id):
+            row_market = row.get("marketId", (row.get("market") or {}).get("id"))
+            if row_market is None or int(row_market) != market_id:
+                raise ValueError("Unexpected position market")
+            token = (row.get("outcome") or {}).get("onChainId")
+            if not token:
+                raise ValueError("Missing position token")
+            self._nonnegative_decimal(row.get("amount"), "position amount")
+            amount = self._parse_position_amount(row["amount"])
+            holdings[str(token)] = holdings.get(str(token), Decimal(0)) + amount
+        return holdings
+
+    async def get_market_buy_hashes(self, market_id: int) -> list[str]:
+        hashes = []
+        for row in await self._collect_pages(self.get_orders, first=200):
+            if not isinstance(row.get("status"), str):
+                raise ValueError("Missing order status")
+            if row["status"].upper() != "OPEN":
+                continue
+            row_market = row.get("marketId", (row.get("market") or {}).get("id"))
+            if row_market is None:
+                raise ValueError("Missing open order market")
+            if int(row_market) != market_id:
+                continue
+            order = row.get("order") or {}
+            if str(order.get("side")) not in {"0", "1"}:
+                raise ValueError("Invalid order side")
+            if str(order["side"]) == "0":
+                if not order.get("hash"):
+                    raise ValueError("Missing BUY hash")
+                hashes.append(str(order["hash"]))
+        return hashes
+
     @staticmethod
     def _nonnegative_decimal(raw: Any, field: str) -> Decimal:
         try:

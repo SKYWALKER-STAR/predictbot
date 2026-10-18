@@ -97,9 +97,16 @@ class PredictBot:
                 if selected_market_ids:
                     await self._market_data.refresh_markets_for_ids(selected_market_ids)
 
+                # Apply the no-add rule even when no strategy emits an intent.
+                blocked_markets = set()
+                for market_id in selected_market_ids:
+                    if not await self._order_manager.cancel_buys_if_holding(market_id):
+                        blocked_markets.add(market_id)
                 for strategy in self._strategies:
                     intents = await strategy.on_tick()
                     for intent in intents:
+                        if intent.market_id in blocked_markets:
+                            continue
                         market = self._market_data.get_market(intent.market_id)
                         if market is None:
                             continue
@@ -171,7 +178,7 @@ class PredictBot:
             return []
         mode = settings.strategy_mode.strip().lower()
         if mode == "ws_spread":
-            return [WsSpreadStrategy(market_data=self._market_data, market_ids=market_ids)]
+            return [WsSpreadStrategy(market_data=self._market_data, market_ids=market_ids, position_tracker=self._position_tracker)]
         if mode == "market_maker":
             return [BasicMarketMakerStrategy(market_data=self._market_data, market_ids=market_ids, position_tracker=self._position_tracker, order_manager=self._order_manager)]
         if mode == "inventory_market_maker":

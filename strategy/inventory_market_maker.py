@@ -148,7 +148,10 @@ class InventoryMarketMakerStrategy(BasicMarketMakerStrategy):
         if not all(math.isfinite(x) and x >= 0 for x in (yes, no)):
             return self._skip(market_id, "invalid inventory; index1_shares=%s index2_shares=%s", yes, no)
         cfg = settings.mm_outcome.strip().upper()
-        if cfg == "AUTO":
+        has_inventory = yes > 0 or no > 0
+        if has_inventory:
+            selected = outcomes[1 if yes >= no else 2]
+        elif cfg == "AUTO":
             # Keep quoting the exposed outcome when the favored side switches,
             # so an old position still has an exit quote after a reversal.
             index = (1 if yes > no else 2) if yes != no else (1 if yes_mid >= .5 else 2)
@@ -186,6 +189,8 @@ class InventoryMarketMakerStrategy(BasicMarketMakerStrategy):
         # Decline out-of-domain model prices instead of clamping an uneconomic
         # bid upwards or an uneconomic ask downwards at the binary boundaries.
         for side, raw in (("SELL", quotes.ask), ("BUY", quotes.bid)):
+            if side == "BUY" and has_inventory:
+                continue
             if raw is None or not math.isfinite(raw) or not 0.01 <= raw <= 0.99:
                 logger.debug("[%s] market=%s side=%s skipped: %s raw_price=%s", self.name,
                              market_id, side, "inventory boundary" if raw is None else
@@ -201,20 +206,18 @@ class InventoryMarketMakerStrategy(BasicMarketMakerStrategy):
                 logger.debug("[%s] market=%s side=%s skipped: passive price out of range; "
                              "raw_price=%.8f final_price=%.2f", self.name, market_id, side, raw, price)
                 continue
-            # Fixed lot size preserves the model's execution unit. Do not
-            # inflate orders to satisfy min notional or silently oversell.
-            if side == "SELL" and own + 1e-9 < lot:
-                logger.debug("[%s] market=%s side=SELL skipped: insufficient shares; own=%.6f lot=%.6f",
-                             self.name, market_id, own, lot)
+            # Partial fills can leave less than one model lot to sell.
+            quantity = lot if side == "BUY" else float(Decimal(str(min(lot, own))).quantize(
+                Decimal("0.000001"), rounding=ROUND_FLOOR))
+            if quantity <= 0:
                 continue
-            if lot * price < settings.mm_min_order_value_usdt or lot * price > settings.max_order_usdt:
-                logger.debug("[%s] market=%s side=%s skipped: notional=%.6f min=%.6f max=%.6f",
-                             self.name, market_id, side, lot * price,
-                             settings.mm_min_order_value_usdt, settings.max_order_usdt)
+            if not settings.mm_min_order_value_usdt <= quantity * price <= settings.max_order_usdt:
+                logger.info("[%s] market=%s cannot quote residual quantity=%s notional=%s",
+                            self.name, market_id, quantity, quantity * price)
                 continue
             logger.debug("[%s] market=%s side=%s intent generated: raw_price=%.8f "
                          "final_price=%.2f quantity=%.6f notional=%.6f best_bid=%.6f best_ask=%.6f",
-                         self.name, market_id, side, raw, price, lot, lot * price, best_bid, best_ask)
-            intents.append(TradeIntent(market_id, selected.name, side, "LIMIT", lot,
+                         self.name, market_id, side, raw, price, quantity, quantity * price, best_bid, best_ask)
+            intents.append(TradeIntent(market_id, selected.name, side, "LIMIT", quantity,
                                        price, selected.on_chain_id, reason))
         return intents
