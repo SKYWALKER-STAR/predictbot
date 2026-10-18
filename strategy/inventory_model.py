@@ -8,9 +8,12 @@ This module has no exchange, settings, or third-party dependencies.
 from __future__ import annotations
 
 import math
+import logging
 from collections import deque
 from dataclasses import dataclass
 from functools import lru_cache
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,8 @@ class PriceVariance:
 
     def observe(self, timestamp: float, mid: float) -> float:
         if self.samples and timestamp <= self.samples[-1][0]:
+            logger.debug("volatility observation ignored: timestamp=%s last_timestamp=%s",
+                         timestamp, self.samples[-1][0])
             return self.sigma()
         self.samples.append((timestamp, mid))
         while len(self.samples) > 1 and self.samples[0][0] < timestamp - self.window:
@@ -130,11 +135,16 @@ class PriceVariance:
 
     def sigma(self) -> float:
         if len(self.samples) < self.min_samples:
+            logger.debug("volatility warmup: samples=%d required=%d sigma=%.8f",
+                         len(self.samples), self.min_samples, self.fallback_sigma)
             return self.fallback_sigma
         points = list(self.samples)
         elapsed = points[-1][0] - points[0][0]
         if elapsed <= 0:
             return self.fallback_sigma
         variance = sum((b[1] - a[1]) ** 2 for a, b in zip(points, points[1:])) / elapsed
+        logger.debug("volatility estimate: realized_variance_per_second=%.10f raw_sigma=%.8f "
+                     "floor_applied=%s elapsed_seconds=%.3f", variance, math.sqrt(variance),
+                     math.sqrt(variance) < self.fallback_sigma, elapsed)
         # Initial sigma also acts as a floor against quiet/stale markets.
         return max(self.fallback_sigma, math.sqrt(variance))
